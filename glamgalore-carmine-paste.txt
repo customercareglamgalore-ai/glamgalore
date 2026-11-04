@@ -1,0 +1,115 @@
+bash <<'GG_CARMINE'
+set -e
+cd /var/www/glamgalore
+
+command -v python3 >/dev/null || { echo "STOP: python3 is not installed on this server"; exit 1; }
+
+# 1) Download carmine-images.zip from GitHub, unpack it, and check the photos are real PNGs
+rm -rf public/products/carmine
+mkdir -p public/products/carmine
+curl -sL -o /tmp/carmine-images.zip "https://github.com/customercareglamgalore-ai/glamgalore/raw/main/carmine-images.zip"
+python3 - <<'GG_EOF_UNZIP'
+import os
+import sys
+import zipfile
+
+try:
+    z = zipfile.ZipFile('/tmp/carmine-images.zip')
+except Exception:
+    print('STOP: carmine-images.zip did not download - is it in the GitHub repo?')
+    sys.exit(1)
+names = sorted(n for n in z.namelist() if n.lower().endswith('.png'))
+if len(names) != 3:
+    print('STOP: expected 3 PNG photos in the zip, found ' + str(len(names)))
+    sys.exit(1)
+for n in names:
+    data = z.read(n)
+    if data[1:4] != b'PNG' or len(data) < 50000:
+        print('STOP: ' + n + ' is not a valid photo')
+        sys.exit(1)
+    open('public/products/carmine/' + os.path.basename(n), 'wb').write(data)
+print('CARMINE images OK: ' + str(len(names)) + ' photos unpacked')
+GG_EOF_UNZIP
+
+# 2) Create the product (skips if it already exists)
+cat > scripts/create-carmine.js <<'GG_EOF_JS'
+// One-off: creates CARMINE (Carmine Lace Maxi Dress, Rs 3,499). Images must
+// already be in public/products/carmine/carmine-1..3.png. Safe to re-run:
+// if the handle already exists it does nothing. DRY_RUN=1 creates then deletes.
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+
+const HANDLE = 'carmine';
+const DESCRIPTION =
+  'Make an entrance in the Carmine Lace Maxi Dress, featuring floral lace, cascading ruffles, sheer sleeves and a dramatic thigh-high slit.';
+const FEATURES = [
+  'Material: Polyester',
+  'Rich burgundy floral lace fabric',
+  'Plunging V-neckline with ruffle detailing',
+  'Full-length fitted silhouette',
+  'Dramatic cascading front ruffles',
+  'Long flared sleeves and thigh-high front slit',
+];
+const IMAGES = [1, 2, 3].map((n) => `/products/carmine/carmine-${n}.png`);
+const COLOR = 'Burgundy';
+// CJ variant SKUs for the Wine Red colourway (the 2XL, 710JQ, is not listed).
+const SIZES = { S: 'CJLY355544706FU', M: 'CJLY355544707GT', L: 'CJLY355544708HS', XL: 'CJLY355544709IR' };
+
+async function main() {
+  const dry = process.env.DRY_RUN === '1';
+  const existing = await prisma.product.findUnique({ where: { handle: HANDLE } });
+  if (existing) {
+    console.log('SKIP create (already exists):', HANDLE);
+    return;
+  }
+
+  const product = await prisma.product.create({
+    data: {
+      handle: HANDLE,
+      title: 'CARMINE',
+      descriptionHtml: '<p>' + DESCRIPTION + '</p>',
+      description: DESCRIPTION,
+      features: FEATURES,
+      seoTitle: 'CARMINE LACE MAXI DRESS | Glam Galore',
+      seoDescription: DESCRIPTION,
+      type: 'Dress',
+      price: 3499,
+      status: 'active',
+      isDropshipped: true,
+      collections: ['spring-has-sprung'],
+      images: { create: IMAGES.map((url, i) => ({ url, position: i })) },
+      variants: {
+        create: Object.entries(SIZES).map(([size, sku]) => ({
+          optionName: 'Color',
+          optionValue: COLOR,
+          option2Name: 'Size',
+          option2Value: size,
+          imageUrl: IMAGES[0],
+          sku,
+        })),
+      },
+    },
+    include: { images: true, variants: true },
+  });
+  console.log(
+    'Created CARMINE (' + product.handle + '): ' + product.images.length + ' images, ' +
+      product.variants.length + ' variants, Rs 3499, collections: ' + product.collections.join(', '),
+  );
+
+  if (dry) {
+    await prisma.product.delete({ where: { id: product.id } });
+    console.log('DRY_RUN: deleted the test product again');
+  }
+}
+
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(() => prisma.$disconnect());
+GG_EOF_JS
+node scripts/create-carmine.js
+
+echo "CARMINE block done - the product is live now (no rebuild needed)"
+GG_CARMINE
